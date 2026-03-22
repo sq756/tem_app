@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+.env
+.plan_v1.md.swp
