@@ -1,1 +1,16 @@
-“可微物理 TEM 智能分析引擎（暂定名：DeepDiffra）” 的 MVP（最小可行性产品）系统架构。我们将整个软件分为 四大独立模块，采用松耦合设计，方便你单人分步开发和调试。一、 系统整体架构概览整个系统是一个闭环：前端提取特征 $\rightarrow$ 后端物理生成 $\rightarrow$ 空间度量计算误差 $\rightarrow$ 梯度下降优化参数 $\rightarrow$ 前端渲染结果。模块层级核心任务技术栈推荐输入 → 输出1. 感知层 (Perception)降维：将真实图像剥离成纯几何坐标OpenCV, 传统 CV 算法局部 HRTEM 图像 $\rightarrow$ 实验斑点坐标组 $\mathbf{g}_{exp}$2. 物理层 (Forward)生成：用 10 个参数正向渲染理论衍射图PyTorch (纯张量运算)10 维参数向量 $\rightarrow$ 理论斑点坐标组 $\mathbf{g}_{calc}$3. 优化层 (Optimizer)拟合：计算误差并反向传播更新参数PyTorch (Autograd, Adam)$\mathbf{g}_{exp}$ 与 $\mathbf{g}_{calc}$ $\rightarrow$ 优化后的晶格与应变数据4. 交互层 (UI & Viz)交付：傻瓜式操作与结果可视化PySide6 / PyQt, Matplotlib鼠标框选 $\rightarrow$ 拟合图谱对比、2D 应变热力图二、 核心模块详细设计（代码化思路）模块一：感知层（图像 $\rightarrow$ 几何坐标）不要在这里用复杂的深度学习，传统 CV 足够快且稳。滑窗切片（Patching）： 将大图切分成 $128 \times 128$ 的小图块。FFT 变换： 对每个图块做二维快速傅里叶变换，取对数振幅谱。峰值提取（Peak Detection）：使用高斯模糊平滑背景噪声。屏蔽中心透射斑（将中心区域像素强制置零）。寻找局部极大值（Local Maxima），提取出前 $N$ 个最亮斑点的像素坐标。输出数据格式： 一个形状为 [N, 2] 的二维数组，代表实验斑点的 $(x, y)$ 坐标。模块二：物理层（前向生成器 - 你的核心护城河）这是系统的“心脏”，必须全部用 PyTorch 张量（Tensor）编写，以保证全链路可导（Differentiable）。定义可学习参数（Trainable Tensors）：初始化晶格常数 $a, b, c, \alpha, \beta, \gamma$，欧拉角 $\theta, \phi, \psi$，以及厚度倒数 $s_{max}$。全部设置为 requires_grad=True。正空间到倒易空间： 编写矩阵运算，根据 $a, b, c, \alpha, \beta, \gamma$ 算出倒易基向量 $\mathbf{a}^*, \mathbf{b}^*, \mathbf{c}^*$。生成 3D 阵列： 在特定的 $(h, k, l)$ 范围内（如 $-5$ 到 $5$），生成所有潜在的三维倒易矢量 $\mathbf{g}_{3D}$。空间旋转投影： 将欧拉角转化为 $3 \times 3$ 旋转矩阵 $R$，执行 $\mathbf{g}_{rotated} = R \times \mathbf{g}_{3D}$。Ewald 球截断算子： 利用 Sinc 函数或 Sigmoid 平滑函数代替硬阈值（为了保证梯度不断裂），选出 $Z$ 轴坐标接近 0 的点。输出数据格式： 一个形状为 [M, 2] 的张量，代表理论斑点的 $(x, y)$ 坐标。模块三：优化层（误差度量与反向传播）这里的最大难点是：提取出的实验斑点集（$N$ 个）和理论生成的斑点集（$M$ 个），数量可能不同，且没有一一对应关系。损失函数（Loss Function）： 绝对不能用普通的 MSE。必须使用点云匹配算法中的 Chamfer Distance（倒角距离）。它会计算实验集中每个点到理论集中最近点的距离之和，反之亦然。这允许 $N \neq M$。物理先验约束（Penalty Terms）： 在 Loss 中加入惩罚项。例如，如果 $\alpha$ 偏离 $90^\circ$ 超过 $5^\circ$，给 Loss 加上一个极大的惩罚值，防止拟合出违背物理常识的晶体。优化器选择： 推荐使用 torch.optim.Adam 进行粗调，收敛后再用 L-BFGS 进行高精度微调。模块四：交互层（全栈封装）既然目标是做成一款能给同行用的桌面软件，UI 必须轻量、安全。前端框架： 强烈建议使用 PySide6。它与 Python 后端无缝结合，且支持跨平台（Windows/Mac）。核心组件：图像画布区： 支持加载 .dm3 或 .tif 格式的 TEM 原图，支持鼠标拖拽框选 ROI（感兴趣区域）。拟合监控面板： 实时显示当前的 $a, b, c$ 拟合数值，以及 Loss 曲线的下降过程。结果对比图： 在提取的 FFT 图谱上，用红色十字准星叠加绘制出 AI 拟合出的理论斑点。如果准星完美套中了光斑，说明拟合成功。
+# DeepDiffra 物理分析引擎 - 系統架構 MVP (v1.1)
+
+## 一、 系統整體架構
+1. **感知層 (Perception)**: 傳統 CV 提取斑點坐標 $\mathbf{g}_{exp}$ (OpenCV)。
+2. **物理層 (Forward)**: 全鏈路可微 PyTorch 渲染理論斑點 $\mathbf{g}_{calc}$。
+3. **優化層 (Optimizer)**: 加權 Chamfer Distance 擬合誤差，Adam 優化參數。
+4. **交互層 (UI & Viz)**: 基於 **Streamlit** 的 Web 介面，Matplotlib 可視化結果。
+
+## 二、 核心模組與任務追蹤
+- [x] Task 1: 感知層開發 (FFT, Peak Detection)
+- [x] Task 2: 物理層開發 (Reciprocal base, Rotation, Ewald truncation)
+- [x] Task 3: 優化層開發 (Chamfer Loss, Physical penalty)
+- [ ] Task 4: 交互層開發 (Streamlit App, Viz Engine)
+
+## 三、 模組詳細設計 (詳見專案文件)
+... [後續補充詳情]
